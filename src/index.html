@@ -11,8 +11,16 @@
   <meta name="viewport" content="viewport-fit=cover, width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="format-detection" content="telephone=no" />
   <meta name="msapplication-tap-highlight" content="no" />
-
+  <script src="assets/jsfeat-min.js"></script>
+  <script>
+    function onOpenCvReady() {
+      console.log('✅ OpenCV.js is ready!');
+    }
+  </script>
+  <script async src="https://docs.opencv.org/4.5.5/opencv.js" onload="onOpenCvReady();"></script>
   <link rel="icon" type="image/png" href="assets/icon/favicon.png" />
+  <script src="https://cdn.jsdelivr.net/npm/tracking@1.1.3/build/tracking-min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/image-js/dist/image.min.js"></script>
 
   <!-- add to homescreen for ios -->
   <meta name="mobile-web-app-capable" content="yes" />

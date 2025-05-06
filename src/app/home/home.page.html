@@ -1,20 +1,19 @@
 <ion-header [translucent]="true">
   <ion-toolbar>
     <ion-title>
-      Blank
+      SCANNER
     </ion-title>
   </ion-toolbar>
 </ion-header>
 
-<ion-content [fullscreen]="true">
-  <ion-header collapse="condense">
-    <ion-toolbar>
-      <ion-title size="large">Blank</ion-title>
-    </ion-toolbar>
-  </ion-header>
-
-  <div id="container">
-    <strong>Ready to create an app?</strong>
-    <p>Start with Ionic <a target="_blank" rel="noopener noreferrer" href="https://ionicframework.com/docs/components">UI Components</a></p>
+<ion-content fullscreen scroll-y="false" class="no-scroll">
+  <div *ngIf="!showCamera" class="start-button-wrapper">
+    <ion-button expand="block" (click)="startCameraView()">Start Camera</ion-button>
   </div>
+
+  <div *ngIf="showCamera" class="camera-container">
+    <video id="cameraFeed" #videoElement autoplay playsinline muted></video>
+    <canvas id="overlayCanvas"></canvas>
+  </div>
+  <img *ngIf="croppedImageUrl" [src]="croppedImageUrl" [style.opacity]="cropOpacity">
 </ion-content>
