@@ -1,19 +1,27 @@
-<ion-header [translucent]="true">
+<ion-header>
   <ion-toolbar>
     <ion-title>
-      SCANNER
+      Document Scanner
     </ion-title>
   </ion-toolbar>
 </ion-header>
 
-<ion-content fullscreen scroll-y="false" class="no-scroll">
-  <div *ngIf="!showCamera" class="start-button-wrapper">
-    <ion-button expand="block" (click)="startCameraView()">Start Camera</ion-button>
+<ion-content>
+  <div style="display: flex; flex-direction: column; align-items: center; margin-top: 16px;">
+    <ion-button *ngIf="!showCamera" (click)="onStartCameraButtonClick()">Start Camera</ion-button>
+    <ion-button *ngIf="showCamera && !showCroppedImage" color="danger" (click)="reset()">Reset</ion-button>
   </div>
 
-  <div *ngIf="showCamera" class="camera-container">
-    <video id="cameraFeed" #videoElement autoplay playsinline muted></video>
-    <canvas id="overlayCanvas"></canvas>
+  <!-- Only show video/canvas when camera is active and cropped image is NOT shown -->
+  <div *ngIf="showCamera && !showCroppedImage" style="position: relative;">
+    <video #video autoplay playsinline></video>
+    <canvas #canvas></canvas>
   </div>
-  <img *ngIf="croppedImageUrl" [src]="croppedImageUrl" [style.opacity]="cropOpacity">
+
+  <!-- Show cropped image when available -->
+  <div *ngIf="showCroppedImage && croppedImageUrl" style="display: flex; flex-direction: column; align-items: center; margin-top: 24px;">
+    <h2>Cropped Document</h2>
+    <img [src]="croppedImageUrl" alt="Cropped Document" style="max-width: 480px; border: 2px solid #4caf50; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);" />
+    <ion-button color="primary" style="margin-top: 16px;" (click)="reset()">Scan Another</ion-button>
+  </div>
 </ion-content>

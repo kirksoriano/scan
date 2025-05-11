@@ -1,8 +1,9 @@
-import { Component, AfterViewInit } from '@angular/core';
 import { IonicModule } from '@ionic/angular';
 import { CommonModule } from '@angular/common';
-declare var jsfeat: any;
-declare var tracking: any;
+import { Component, AfterViewInit, ViewChild, ElementRef } from '@angular/core';
+import { NgZone } from '@angular/core';
+
+declare var cv: any;
 
 @Component({
   selector: 'app-home',
@@ -12,381 +13,297 @@ declare var tracking: any;
   imports: [IonicModule, CommonModule],
 })
 export class HomePage implements AfterViewInit {
+  @ViewChild('canvas', { static: false }) canvasRef!: ElementRef<HTMLCanvasElement>;
+  @ViewChild('video', { static: false }) videoRef!: ElementRef<HTMLVideoElement>;
 
-  video!: HTMLVideoElement;
-  canvas!: HTMLCanvasElement;
-  ctx!: CanvasRenderingContext2D | null;
-  showCamera: boolean = false;
-  trackingTask: any = null;
-  detectedRect: any = null;
-  smoothedRect: { x: number, y: number, width: number, height: number } | null = null;
-  smoothingAlpha: number = 0.2; // Smoother overlay
-  rectMissedFrames: number = 0;
-  maxMissedFrames: number = 60; // Increased for longer persistence
-  lastDetectedRect: any = null;
+  showCamera = false;
+  showCroppedImage = false;
   croppedImageUrl: string | null = null;
-  lastCropCorners: {x: number, y: number}[] | null = null;
-  cropMissedFrames: number = 0; // NEW: for holding last crop
-  lastVelocity: { x: number, y: number, width: number, height: number } | null = null;
-  overlayOpacity: number = 1.0;
-  cropOpacity: number = 1.0;
-  fadeOutStartFrames: number = 15; // Start fading after 15 missed frames
-  fadeOutFrames: number = 30;      // Fade out over 30 frames
-  detectedRects: { x: number, y: number, width: number, height: number }[] = [];
-  smoothedRects: ({ x: number, y: number, width: number, height: number } | null)[] = [null, null, null, null];
+  cropOpacity = 1;
+
+  // Four clear detection boxes (corners)
+  detectionBoxes = [
+    { x: 0, y: 0, width: 150, height: 150 }, // top-left
+    { x: 0, y: 330, width: 150, height: 150 }, // bottom-left
+    { x: 330, y: 0, width: 150, height: 150 }, // top-right
+    { x: 330, y: 330, width: 150, height: 150 } // bottom-right
+  ];
+
+  constructor(private ngZone: NgZone) {
+    
+  }
+
 
   ngAfterViewInit() {
-    // Check if jsfeat and tracking are loaded
-    if (typeof jsfeat === 'undefined') {
-      console.error('jsfeat is not loaded!');
-    } else {
-      console.log('jsfeat loaded:', jsfeat);
-
-      // Test jsfeat: create a matrix and run canny
-      const testMat = new jsfeat.matrix_t(10, 10, jsfeat.U8_t | jsfeat.C1_t);
-      for (let i = 0; i < 100; i++) testMat.data[i] = i % 255;
-      const edgeMat = new jsfeat.matrix_t(10, 10, jsfeat.U8_t | jsfeat.C1_t);
-      jsfeat.imgproc.canny(testMat, edgeMat, 10, 30);
-      console.log('jsfeat test edgeMat:', edgeMat.data);
+    if (typeof cv === 'undefined') {
+      console.error('OpenCV.js is not loaded!');
+      return;
     }
-    if (typeof tracking === 'undefined') {
-      console.error('tracking.js is not loaded!');
-    } else {
-      console.log('tracking.js loaded:', tracking);
 
-      // Test tracking.js: create a tracker and simulate a 'track' event
-      const tracker = new tracking.ColorTracker(['magenta']);
-      tracker.on('track', (event: any) => {
-        console.log('tracking.js test event:', event);
-      });
-      tracker.emit('track', { data: [{ x: 1, y: 2, width: 3, height: 4 }] });
-    }
-    // No OpenCV.js initialization needed
+  // No need to draw here; handled in processVideo
+  }
+  // Call this from your button
+  onStartCameraButtonClick() {
+    this.showCamera = true;
+    setTimeout(() => this.startCameraView(), 0);
   }
 
   startCameraView() {
-    this.showCamera = true;
-    setTimeout(() => this.initializeCamera(), 100);
-  }
-
-  async initializeCamera() {
-    this.video = document.getElementById('cameraFeed') as HTMLVideoElement;
-    this.canvas = document.getElementById('overlayCanvas') as HTMLCanvasElement;
-    this.ctx = this.canvas.getContext('2d');
-
-    if (!this.video || !this.canvas || !this.ctx) {
-      console.error('Camera or canvas elements not found!');
+    if (!this.videoRef || !this.videoRef.nativeElement) {
+      alert('Video element not ready');
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Camera not supported');
       return;
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } } // <-- REMOVE focusMode
-      });
-
-      this.video.srcObject = stream;
-
-      this.video.onloadedmetadata = () => {
-        this.video.play();
-        const updateDimensions = () => {
-          this.canvas.width = this.video.videoWidth;
-          this.canvas.height = this.video.videoHeight;
+    navigator.mediaDevices
+      .getUserMedia({ 
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        } 
+      })
+      .then((stream) => {
+        const video = this.videoRef.nativeElement;
+        video.srcObject = stream;
+        video.play();
+        video.onloadedmetadata = () => {
+          // Set video dimensions explicitly
+          video.width = 640;
+          video.height = 480;
+          this.processVideo();
         };
+      })
+      .catch((err) => {
+        console.error('Camera error:', err);
+        alert('Error accessing camera: ' + err.message);
+      });
+}
 
-        updateDimensions();
-        window.addEventListener('resize', updateDimensions);
-
-        this.startTracking();
-        this.startFrameProcessing();
-      };
-    } catch (err) {
-      console.error('Camera access error:', err);
-    }
-  }
-
-  startTracking() {
-    // Use tracking.js to detect rectangles (color-based for demo, e.g., white)
-    if (typeof tracking === 'undefined') {
-      console.error('tracking.js is not loaded!');
-      return;
-    }
-    const tracker = new tracking.ColorTracker(['magenta']);
-    tracker.setMinDimension(50); // adjust as needed
-    tracker.setMinGroupSize(30); // adjust as needed
-
-    tracker.on('track', (event: any) => {
-      if (event.data.length > 0) {
-        // Use the largest detected rectangle
-        this.detectedRect = event.data.reduce((max: any, rect: any) =>
-          rect.width * rect.height > max.width * max.height ? rect : max, event.data[0]);
-      } else {
-        this.detectedRect = null;
-      }
+  drawDetectionBoxes(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    ctx.save();
+    ctx.globalAlpha = 1.0;
+    this.detectionBoxes.forEach(box => {
+      ctx.strokeStyle = 'lime';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(box.x, box.y, box.width, box.height);
     });
-
-    this.trackingTask = tracking.track(this.video, tracker, { camera: false });
+    ctx.restore();
   }
 
-  // Ramer–Douglas–Peucker algorithm for polygon approximation
-  rdp(points: number[][], epsilon: number): number[][] {
-    if (points.length < 3) return points;
-    let dmax = 0;
-    let index = 0;
-    const end = points.length - 1;
-    for (let i = 1; i < end; i++) {
-      const d = this.perpendicularDistance(points[i], points[0], points[end]);
-      if (d > dmax) {
-        index = i;
-        dmax = d;
-      }
-    }
-    if (dmax > epsilon) {
-      const recResults1 = this.rdp(points.slice(0, index + 1), epsilon);
-      const recResults2 = this.rdp(points.slice(index, end + 1), epsilon);
-      return recResults1.slice(0, -1).concat(recResults2);
-    } else {
-      return [points[0], points[end]];
-    }
+  isRectInsideDetectionBoxes(rect: { x: number; y: number; width: number; height: number }) {
+    return this.detectionBoxes.some(box => {
+      return (
+        rect.x >= box.x &&
+        rect.y >= box.y &&
+        rect.x + rect.width <= box.x + box.width &&
+        rect.y + rect.height <= box.y + box.height
+      );
+    });
   }
 
-  perpendicularDistance(pt: number[], lineStart: number[], lineEnd: number[]): number {
-    const dx = lineEnd[0] - lineStart[0];
-    const dy = lineEnd[1] - lineStart[1];
-    if (dx === 0 && dy === 0) {
-      return Math.hypot(pt[0] - lineStart[0], pt[1] - lineStart[1]);
-    }
-    const t = ((pt[0] - lineStart[0]) * dx + (pt[1] - lineStart[1]) * dy) / (dx * dx + dy * dy);
-    const nearestX = lineStart[0] + t * dx;
-    const nearestY = lineStart[1] + t * dy;
-    return Math.hypot(pt[0] - nearestX, pt[1] - nearestY);
-  }
-
-  startFrameProcessing() {
-    const FPS = 10;
-    const areaRatio = 0.2;
-
-    setInterval(() => {
-      if (!this.video || !this.ctx || !this.video.videoWidth) return;
-
-      const width = this.video.videoWidth;
-      const height = this.video.videoHeight;
-      const alignW = width * areaRatio;
-      const alignH = height * areaRatio;
-
-      // Move bottom rectangles upwards (e.g., 20% of height)
-      const verticalOffset = height * 0.15;
-
-      const alignRects = [
-        { x: 0, y: 0 }, // top-left
-        { x: width - alignW, y: 0 }, // top-right
-        { x: 0, y: height - alignH - verticalOffset }, // bottom-left (moved up)
-        { x: width - alignW, y: height - alignH - verticalOffset } // bottom-right (moved up)
-      ];
-
-      // Draw video frame
-      this.ctx.drawImage(this.video, 0, 0, width, height);
-
-      // --- Dim the background ---
-      this.ctx.save();
-      this.ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      this.ctx.fillRect(0, 0, width, height);
-      this.ctx.restore();
-
-      // --- Draw lighter/clearer rectangles in corners ---
-      this.ctx.save();
-      this.ctx.globalAlpha = 0.85;
-      this.ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-      this.ctx.lineWidth = 6;
-      this.ctx.fillStyle = 'rgba(255,255,255,0.18)';
-      // --- Draw lighter/clearer rectangles in corners ---
-      // (Removed both fillRect and strokeRect for no border, no fill)
-      // alignRects.forEach(r => {
-      //   this.ctx!.fillRect(r.x, r.y, alignW, alignH);
-      //   this.ctx!.strokeRect(r.x, r.y, alignW, alignH);
-      // });
-      this.ctx.restore();
-
-      // --- Rectangle and edge detection using OpenCV.js ---
-      if (this.processFrameWithOpenCV) {
-        this.processFrameWithOpenCV();
-      }
-
-      // --- Draw overlays for detected black-filled rectangles only ---
-      if (this.detectedRects && Array.isArray(this.detectedRects)) {
-        for (let k = 0; k < this.detectedRects.length; k++) {
-          const rect = this.detectedRects[k];
-          if (rect && this.ctx) {
-            // Smoothing per rect
-            if (!this.smoothedRects[k]) {
-              this.smoothedRects[k] = { ...rect };
-            } else {
-              this.smoothedRects[k] = {
-                x: this.smoothingAlpha * rect.x + (1 - this.smoothingAlpha) * this.smoothedRects[k]!.x,
-                y: this.smoothingAlpha * rect.y + (1 - this.smoothingAlpha) * this.smoothedRects[k]!.y,
-                width: this.smoothingAlpha * rect.width + (1 - this.smoothingAlpha) * this.smoothedRects[k]!.width,
-                height: this.smoothingAlpha * rect.height + (1 - this.smoothingAlpha) * this.smoothedRects[k]!.height,
-              };
-            }
-            const sRect = this.smoothedRects[k]!;
-            this.ctx.save();
-            this.ctx.globalAlpha = 1.0;
-            this.ctx.strokeStyle = 'rgba(0,255,0,0.9)'; // Green border
-            this.ctx.lineWidth = 6;
-            this.ctx.strokeRect(sRect.x, sRect.y, sRect.width, sRect.height);
-            this.ctx.fillStyle = 'rgba(0,255,0,0.15)'; // Light green fill
-            this.ctx.fillRect(sRect.x, sRect.y, sRect.width, sRect.height);
-            this.ctx.restore();
-          } else {
-            this.smoothedRects[k] = null;
-          }
+  processVideo() {
+    try {
+        const video = this.videoRef.nativeElement;
+        const canvas = this.canvasRef.nativeElement;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            console.error('Could not get canvas context');
+            return;
         }
-      }
-    }, 1000 / FPS);
-  }
 
-  processFrameWithOpenCV() {
-    if (typeof cv === 'undefined' || !this.canvas || !this.ctx) return;
-  
-    const src = cv.imread(this.canvas);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
     const gray = new cv.Mat();
-    const denoised = new cv.Mat();
-    const equalized = new cv.Mat();
-    const thresh = new cv.Mat();
+    const blurred = new cv.Mat();
     const edges = new cv.Mat();
     const contours = new cv.MatVector();
     const hierarchy = new cv.Mat();
-  
-    // Preprocessing: denoise and equalize
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
-    cv.GaussianBlur(gray, denoised, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-    cv.equalizeHist(denoised, equalized);
-  
-    cv.adaptiveThreshold(
-      equalized,
-      thresh,
-      255,
-      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-      cv.THRESH_BINARY_INV,
-      11,
-      2
-    );
-    cv.Canny(thresh, edges, 80, 200); // Increased thresholds
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-  
-    // Alignment rectangles (MATCH startFrameProcessing)
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-    const areaRatio = 0.2;
-    const alignW = width * areaRatio;
-    const alignH = height * areaRatio;
-    const verticalOffset = height * 0.15;
-    const alignRects = [
-      { x: 0, y: 0 }, // top-left
-      { x: width - alignW, y: 0 }, // top-right
-      { x: 0, y: height - alignH - verticalOffset }, // bottom-left (moved up)
-      { x: width - alignW, y: height - alignH - verticalOffset } // bottom-right (moved up)
-    ];
-    
-    // For each alignment rect, find the largest black rectangle inside it
-    let detectedRects: { x: number, y: number, width: number, height: number }[] = [];
-    let detectedCorners: { x: number, y: number }[][] = [];
-  
-    for (let k = 0; k < alignRects.length; k++) {
-      const r = alignRects[k];
-      let largest: { rect: any, points: { x: number, y: number }[] } | null = null;
-      for (let i = 0; i < contours.size(); ++i) {
+
+    const FPS = 10;
+    let stopped = false;
+
+    const process = () => {
+      if (stopped) return;
+      if (!video || video.readyState < 2) {
+        requestAnimationFrame(process);
+        return;
+      }
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      this.drawDetectionBoxes(ctx, canvas.width, canvas.height);
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      src.data.set(imageData.data);
+
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+      cv.threshold(gray, gray, 50, 255, cv.THRESH_BINARY); // Only keep pixels darker than 50
+      cv.Canny(blurred, edges, 100, 200);
+      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+      let detectedBoxes = new Array(this.detectionBoxes.length).fill(false);
+
+      for (let i = 0; i < contours.size(); i++) {
         const cnt = contours.get(i);
         const approx = new cv.Mat();
         cv.approxPolyDP(cnt, approx, 0.02 * cv.arcLength(cnt, true), true);
-        if (approx.rows === 4 && cv.contourArea(approx) > 20) { // Lowered area threshold
+
+        if (approx.rows === 4 && cv.contourArea(approx) > 250 && cv.isContourConvex(approx)) {
           const rect = cv.boundingRect(approx);
-          const aspect = rect.width / rect.height;
-          if (aspect > 0.5 && aspect < 2.0) {
-            const cx = rect.x + rect.width / 2;
-            const cy = rect.y + rect.height / 2;
-            // Check if center is inside this alignment rect
+
+          this.detectionBoxes.forEach((box, idx) => {
             if (
-              cx >= r.x && cx <= r.x + alignW &&
-              cy >= r.y && cy <= r.y + alignH
+              rect.x >= box.x &&
+              rect.y >= box.y &&
+              rect.x + rect.width <= box.x + box.width &&
+              rect.y + rect.height <= box.y + box.height
             ) {
-              const roi = gray.roi(rect);
-              const meanScalar = cv.mean(roi);
-              roi.delete();
-              if (meanScalar[0] < 50) {
-                if (
-                  !largest ||
-                  rect.width * rect.height > largest.rect.width * largest.rect.height
-                ) {
-                  let points: { x: number, y: number }[] = [];
-                  for (let j = 0; j < 4; j++) {
-                    points.push({ x: approx.intPtr(j, 0)[0], y: approx.intPtr(j, 0)[1] });
-                  }
-                  largest = { rect, points };
-                }
-              }
+              detectedBoxes[idx] = true;
+              ctx.save();
+              ctx.strokeStyle = 'red';
+              ctx.lineWidth = 4;
+              ctx.globalAlpha = 0.7;
+              ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+              ctx.fillStyle = 'rgba(255,0,0,0.2)';
+              ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+              ctx.restore();
             }
-          }
+          });
         }
+
         approx.delete();
         cnt.delete();
       }
-      if (largest) {
-        detectedRects[k] = largest.rect;
-        detectedCorners.push(largest.points);
-      } else {
-        detectedCorners.push([]);
+
+      // In the processVideo function, when all boxes are detected:
+      if (detectedBoxes.every(v => v) && !this.croppedImageUrl) {
+          stopped = true;
+          this.showCamera = false;  // Hide the camera view
+          // Stop the camera stream
+          if (this.videoRef.nativeElement.srcObject) {
+              const stream = this.videoRef.nativeElement.srcObject as MediaStream;
+              stream.getTracks().forEach(track => track.stop());
+          }
+          this.detectAndCropPaper();
+          return;
       }
+
+      requestAnimationFrame(process);
+    };
+
+    requestAnimationFrame(process);
+    } catch (error) {
+        console.error('Error in processVideo:', error);
+    }
     }
 
-    // Draw overlays for all detected rectangles (one per corner)
-    this.detectedRects = detectedRects.filter(r => r !== null) as any;
+    detectAndCropPaper() {
+        const canvas = this.canvasRef.nativeElement;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
   
-    // --- Cropping if all 4 rectangles detected ---
-    if (detectedCorners.every(c => c.length === 4)) {
-      // All four corners detected
-      let centers = detectedCorners.map(pts => {
-        let cx = pts.reduce((sum, p) => sum + p.x, 0) / 4;
-        let cy = pts.reduce((sum, p) => sum + p.y, 0) / 4;
-        return { cx, cy, pts };
-      });
-      centers.sort((a, b) => a.cy - b.cy);
-      let top = centers.slice(0, 2).sort((a, b) => a.cx - b.cx);
-      let bottom = centers.slice(2, 4).sort((a, b) => a.cx - b.cx);
+        // Take a clean snapshot without detection boxes
+        const video = this.videoRef.nativeElement;
   
-      let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-        top[0].pts[0].x, top[0].pts[0].y, // top-left
-        top[1].pts[1].x, top[1].pts[1].y, // top-right
-        bottom[0].pts[2].x, bottom[0].pts[2].y, // bottom-left
-        bottom[1].pts[3].x, bottom[1].pts[3].y  // bottom-right
-      ]);
-      let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
-        0, 0,
-        width, 0,
-        0, height,
-        width, height
-      ]);
-      let M = cv.getPerspectiveTransform(srcTri, dstTri);
-      let dst = new cv.Mat();
-      cv.warpPerspective(src, dst, M, new cv.Size(width, height));
-      cv.imshow(this.canvas, dst);
+        // Create a temporary canvas for the clean snapshot
+        const tempSnapshotCanvas = document.createElement('canvas');
+        tempSnapshotCanvas.width = canvas.width;
+        tempSnapshotCanvas.height = canvas.height;
+        const tempCtx = tempSnapshotCanvas.getContext('2d');
+        if (!tempCtx) return;
   
-      // Only update croppedImageUrl when a new crop is detected
-      this.croppedImageUrl = this.canvas.toDataURL();
+        // Draw only the video frame without any overlays
+        tempCtx.drawImage(video, 0, 0, canvas.width, canvas.height);
   
-      srcTri.delete(); dstTri.delete(); M.delete(); dst.delete();
-      // Store last valid crop corners as a flat array (for example, top-left, top-right, bottom-left, bottom-right)
-      this.lastCropCorners = [
-        { x: top[0].pts[0].x, y: top[0].pts[0].y },
-        { x: top[1].pts[1].x, y: top[1].pts[1].y },
-        { x: bottom[0].pts[2].x, y: bottom[0].pts[2].y },
-        { x: bottom[1].pts[3].x, y: bottom[1].pts[3].y }
-      ];
-    } else if (this.lastCropCorners) {
-      // Show last valid crop if available
-      // (Optional: you could re-crop using lastCropCorners if you want to keep showing the crop)
-      // For now, do nothing, so the crop stays visible
+        // Use the clean snapshot for processing
+        let src = cv.imread(tempSnapshotCanvas);
+        let dst = new cv.Mat();
+  
+        // Gather the four corners from detectionBoxes
+        const corners = [
+            { x: this.detectionBoxes[0].x, y: this.detectionBoxes[0].y }, // top-left
+            { x: this.detectionBoxes[2].x + this.detectionBoxes[2].width, y: this.detectionBoxes[2].y }, // top-right
+            { x: this.detectionBoxes[1].x, y: this.detectionBoxes[1].y + this.detectionBoxes[1].height }, // bottom-left
+            { x: this.detectionBoxes[3].x + this.detectionBoxes[3].width, y: this.detectionBoxes[3].y + this.detectionBoxes[3].height } // bottom-right
+        ];
+  
+        // Sort corners: first by y (top to bottom), then by x (left to right)
+        corners.sort((a, b) => a.y - b.y);
+        const top = corners.slice(0, 2).sort((a, b) => a.x - b.x);
+        const bottom = corners.slice(2, 4).sort((a, b) => a.x - b.x);
+        const ordered = [top[0], top[1], bottom[0], bottom[1]];
+  
+        // Calculate the maximum width and height of the target area
+        const width = Math.max(
+            Math.hypot(ordered[1].x - ordered[0].x, ordered[1].y - ordered[0].y),
+            Math.hypot(ordered[3].x - ordered[2].x, ordered[3].y - ordered[2].y)
+        );
+        const height = Math.max(
+            Math.hypot(ordered[2].x - ordered[0].x, ordered[2].y - ordered[0].y),
+            Math.hypot(ordered[3].x - ordered[1].x, ordered[3].y - ordered[1].y)
+        );
+  
+        // Define the source points using the ordered corners
+        let srcPoints = new cv.Mat(4, 1, cv.CV_32FC2);
+        srcPoints.data32F[0] = ordered[0].x; // top-left
+        srcPoints.data32F[1] = ordered[0].y;
+        srcPoints.data32F[2] = ordered[1].x; // top-right
+        srcPoints.data32F[3] = ordered[1].y;
+        srcPoints.data32F[4] = ordered[2].x; // bottom-left
+        srcPoints.data32F[5] = ordered[2].y;
+        srcPoints.data32F[6] = ordered[3].x; // bottom-right
+        srcPoints.data32F[7] = ordered[3].y;
+  
+        // Define the destination points for a rectangle
+        let dstPoints = new cv.Mat(4, 1, cv.CV_32FC2);
+        dstPoints.data32F[0] = 0;         // top-left
+        dstPoints.data32F[1] = 0;
+        dstPoints.data32F[2] = width;     // top-right
+        dstPoints.data32F[3] = 0;
+        dstPoints.data32F[4] = 0;         // bottom-left
+        dstPoints.data32F[5] = height;
+        dstPoints.data32F[6] = width;     // bottom-right
+        dstPoints.data32F[7] = height;
+  
+        // Get perspective transform and apply it
+        let M = cv.getPerspectiveTransform(srcPoints, dstPoints);
+        cv.warpPerspective(src, dst, M, new cv.Size(width, height));
+  
+        // Create a canvas and show the result
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = width;
+        tempCanvas.height = height;
+        cv.imshow(tempCanvas, dst);
+  
+        this.ngZone.run(() => {
+            this.croppedImageUrl = tempCanvas.toDataURL('image/png');
+            this.showCroppedImage = true;
+        });
+  
+        // Cleanup
+        src.delete();
+        dst.delete();
+        M.delete();
+        srcPoints.delete();
+        dstPoints.delete();
     }
 
-    src.delete(); gray.delete(); denoised.delete(); equalized.delete(); thresh.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+  reset() {
+    this.showCamera = false;
+    this.showCroppedImage = false;
+    this.croppedImageUrl = null;
+    // Optionally, stop the camera stream if needed
+    if (this.videoRef && this.videoRef.nativeElement && this.videoRef.nativeElement.srcObject) {
+      const stream = this.videoRef.nativeElement.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      this.videoRef.nativeElement.srcObject = null;
+    }
   }
-}
+  }

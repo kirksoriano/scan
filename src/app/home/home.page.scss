@@ -1,4 +1,4 @@
-// ... existing code ...
+
 .no-scroll {
   overflow: hidden;
 }
@@ -19,7 +19,7 @@ canvas {
   left: 0;
   width: 100vw;
   height: 100vh;
-  object-fit: contain; // 👈 fixes zoom/cropping
+  object-fit: contain;
   z-index: 1;
 }
 
@@ -28,10 +28,40 @@ canvas {
   pointer-events: none;
 }
 
+ion-button.show-crop-btn {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: 1000;
+}
+
 .start-button-wrapper {
   display: flex;
   justify-content: center;
   align-items: center;
   height: 100vh;
 }
-// ... existing code ...
+
+.reset-button-wrapper {
+  padding: 16px;
+}
+
+#debugCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10;
+  border: 2px solid red;
+  pointer-events: none;
+  background: transparent;
+}
+
+.start-button-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+}
